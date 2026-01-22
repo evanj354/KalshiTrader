@@ -1,5 +1,7 @@
 import os
 import json
+import math
+import time
 from dotenv import load_dotenv
 from kalshi_client import KalshiTrader, KalshiMarketData, Environment
 
@@ -30,6 +32,13 @@ def main():
         return
     
     contracts_per_order = int(os.environ.get("CONTRACTS_PER_ORDER", "100"))
+    
+    # CONFIGURATION
+    THROTTLE_DELAY = 1  # Seconds to wait between each trade to avoid rate limiting
+    BID_DISCOUNT_PCT_1 = 13  # Percentage below bid to place orders
+    BID_DISCOUNT_PCT_2 = 6
+    SPREAD_LIMIT_1 = 9
+    SPREAD_LIMIT_2 = 22
 
     # --- Market Data Initialization and Usage ---
     print("--- Initializing KalshiMarketData ---")
@@ -47,12 +56,13 @@ def main():
         )
 
         # --- Test get_markets() API ---
-        series_tickers = ['KXNHLTOTAL', 'KXNHLSPREAD']#['KXNBASPREAD', 'KXNBATOTAL']#['KXNCAAMBSPREAD', 'KXNCAAMBTOTAL']
+        series_tickers = ['KXNCAAMBSPREAD', 'KXNCAAMBTOTAL', 'KXNHLTOTAL', 'KXNHLSPREAD', 'KXNBASPREAD', 'KXNBATOTAL','KXNBAPTS']
+        exclude_no = ['KXATPEXACTMATCH', 'KXATPMATCH', 'KXNBAPTS', 'KXNFLRSHYDS', 'KXNFLPASSYDS', 'KXNFLRECYDS']
         
         for series_ticker in series_tickers:
             print(f"\n--- Processing series: {series_ticker} ---")
             
-            for markets_batch in market_data_client.get_markets_paginated(series_ticker=series_ticker, status='open'):
+            for markets_batch in market_data_client.get_markets_paginated(series_ticker=series_ticker, limit=15, status='open'):
                 print(f"\nProcessing batch of {len(markets_batch)} markets...")
                 
                 for market in markets_batch:
@@ -62,7 +72,7 @@ def main():
                     if expected_expiration:
                         from datetime import datetime, timedelta
                         exp_dt = datetime.fromisoformat(expected_expiration.replace('Z', '+00:00'))
-                        min_future_time = datetime.now(exp_dt.tzinfo) + timedelta(hours=4)
+                        min_future_time = datetime.now(exp_dt.tzinfo) + timedelta(hours=3)
                         if exp_dt < min_future_time:
                             print(f"Skipping market (less than 4h away): {market.get('title')}")
                             continue
@@ -76,21 +86,21 @@ def main():
                     
                     if yes_bid is not None and yes_ask is not None:
                         spread = yes_ask - yes_bid
-                        print(f"\n{title} ({ticker}): yes_bid = {yes_bid}, yes_ask = {yes_ask}, spread = {spread}")
+                        if spread == 0:
+                            continue
+                        if spread < SPREAD_LIMIT_1:
+                            yes_bid_price = math.ceil(yes_bid * (1 - BID_DISCOUNT_PCT_1 / 100))
+                        elif spread < SPREAD_LIMIT_2:
+                            yes_bid_price = math.ceil(yes_bid * (1 - BID_DISCOUNT_PCT_2 / 100))
+                        else:
+                            yes_bid_price = yes_bid+1
+                        print(f"\n{title} ({ticker}): yes_bid = {yes_bid}, yes_ask = {yes_ask}, spread = {spread}, order_price = {yes_bid_price}")
                         
-                        # Calculate expiration timestamp (4 hours before event starts) in SECONDS
+                        # Calculate expiration timestamp (2 hours 58 minutes before event starts) in SECONDS
                         from datetime import datetime, timedelta
                         exp_dt = datetime.fromisoformat(expected_expiration.replace('Z', '+00:00'))
-                        order_expiration_dt = exp_dt - timedelta(hours=4)
+                        order_expiration_dt = exp_dt - timedelta(hours=2, minutes=58)
                         expiration_ts = int(order_expiration_dt.timestamp())
-                        
-                        # Set bid_price based on spread for YES side
-                        if spread < 10 and spread > 0:
-                            yes_bid_price = yes_bid - 1
-                            print(f"  YES: Spread < 10, bidding below at {yes_bid_price}")
-                        else:
-                            yes_bid_price = yes_bid + 1
-                            print(f"  YES: Spread >= 10, bidding above at {yes_bid_price}")
                         
                         if 1 <= yes_bid_price <= 99:
                             try:
@@ -102,23 +112,23 @@ def main():
                         else:
                             print(f"  ⚠️ YES bid price {yes_bid_price} out of range (1-99)")
                     
-                    if no_bid is not None and no_ask is not None:
+                    if no_bid is not None and no_ask is not None and series_ticker not in exclude_no:
                         no_spread = no_ask - no_bid
-                        print(f"  no_bid = {no_bid}, no_ask = {no_ask}, no_spread = {no_spread}")
+                        if spread == 0:
+                            continue
+                        if spread < SPREAD_LIMIT_1:
+                            no_bid_price = math.ceil(no_bid * (1 - BID_DISCOUNT_PCT_1 / 100))
+                        elif spread < SPREAD_LIMIT_2:
+                            no_bid_price = math.ceil(no_bid * (1 - BID_DISCOUNT_PCT_2 / 100))
+                        else:
+                            no_bid_price = no_bid
+                        print(f"  no_bid = {no_bid}, no_ask = {no_ask}, no_spread = {no_spread}, order_price = {no_bid_price}")
                         
-                        # Calculate expiration timestamp (4 hours before event starts) in SECONDS
+                        # Calculate expiration timestamp (2 hours 58 minutes before event starts) in SECONDS
                         from datetime import datetime, timedelta
                         exp_dt = datetime.fromisoformat(expected_expiration.replace('Z', '+00:00'))
-                        order_expiration_dt = exp_dt - timedelta(hours=4)
+                        order_expiration_dt = exp_dt - timedelta(hours=2, minutes=58)
                         expiration_ts = int(order_expiration_dt.timestamp())
-                        
-                        # Set bid_price based on spread for NO side
-                        if no_spread < 10 and no_spread > 0:
-                            no_bid_price = no_bid - 1
-                            print(f"  NO: Spread < 10, bidding below at {no_bid_price}")
-                        else:
-                            no_bid_price = no_bid + 1
-                            print(f"  NO: Spread >= 10, bidding above at {no_bid_price}")
                         
                         if 1 <= no_bid_price <= 99:
                             try:
@@ -132,6 +142,10 @@ def main():
                     
                     if (yes_bid is None or yes_ask is None) and (no_bid is None or no_ask is None):
                         print(f"\n{title} ({ticker}): Missing bid/ask data")
+
+                print("Sleeping to prevent throttling")
+                time.sleep(THROTTLE_DELAY)  # Prevent rate limiting
+
         
     except Exception as e:
         print(f"Failed to initialize or use KalshiMarketData: {e}")

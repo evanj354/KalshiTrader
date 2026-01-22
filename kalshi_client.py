@@ -173,17 +173,24 @@ class KalshiMarketData(KalshiBaseClient):
         """
         return self._send_request('GET', '/trade-api/v2/events', params=params)
 
-    def get_markets_paginated(self, **params):
+    def get_markets_paginated(self, limit=None, **params):
         """
         Generator that yields markets one page at a time.
         Handles pagination automatically.
         
+        Args:
+            limit: Number of markets per page (optional, API default is used if not specified)
+            **params: Additional query parameters (e.g., series_ticker='SPORT', status='open')
+        
         For example: 
-        for markets_batch in get_markets_paginated(series_ticker='SPORT', status='open'):
+        for markets_batch in get_markets_paginated(series_ticker='SPORT', status='open', limit=50):
             for market in markets_batch:
                 # process market
         """
         cursor = None
+        
+        if limit is not None:
+            params['limit'] = limit
         
         while True:
             if cursor:
